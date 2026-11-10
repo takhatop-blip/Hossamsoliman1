@@ -1,0 +1,58 @@
+/**
+ * سجل الموديلات والمزودون
+ * ============================================================
+ * - الاسم canonical هو ما يراه عميل MCP، ونقبل صيغًا بديلة (شرطات/نقاط) ونوحّدها.
+ * - providers: من يستطيع خدمة الموديل — تُجرَّب مفاتيحهم كلها بالترتيب التسلسلي.
+ * - providerModel: اسم الموديل كما يُرسل لكل مزود (قابل للتجاوز بمتغيرات بيئة).
+ */
+
+export type ProviderId = "kie" | "cometapi";
+export type TaskProvider = ProviderId | "merger";
+export type MediaType = "image" | "video" | "merge";
+
+export interface ModelDef {
+  canonical: string;
+  aliases: string[];
+  type: MediaType;
+  providers: ProviderId[];
+  providerModel: Record<ProviderId, string>;
+}
+
+const env = (v?: string | null) => (v && v.trim() ? v.trim() : null);
+
+export const MODELS: ModelDef[] = [
+  {
+    canonical: "gpt-image-2-6/flare-text-to-image",
+    aliases: ["gpt-image-2.6/flare-text-to-image"],
+    type: "image",
+    providers: ["kie", "cometapi"],
+    providerModel: {
+      kie: env(process.env.KIE_IMAGE_MODEL) ?? "gpt-image-2-6/flare-text-to-image",
+      // عند CometAPI تُستبدل الشرطة بالنقطة ويُحذف المائل: gpt-image-2.6-flare-text-to-image
+      cometapi: env(process.env.COMETAPI_IMAGE_MODEL) ?? "gpt-image-2.6-flare-text-to-image",
+    },
+  },
+  {
+    canonical: "grok-imagine-video-1-5-preview",
+    aliases: ["grok-imagine-video-1.5-preview"],
+    type: "video",
+    providers: ["kie", "cometapi"],
+    providerModel: {
+      kie: env(process.env.KIE_VIDEO_MODEL) ?? "grok-imagine-video-1-5-preview",
+      cometapi: env(process.env.COMETAPI_VIDEO_MODEL) ?? "grok-imagine-video-1-5-preview",
+    },
+  },
+];
+
+/** توحيد اسم الموديل عبر aliases — يعيد canonical أو null إن كان مجهولًا */
+export function resolveModel(name: string): ModelDef | null {
+  const n = (name || "").trim();
+  for (const m of MODELS) {
+    if (m.canonical === n || m.aliases.includes(n)) return m;
+  }
+  return null;
+}
+
+export function modelByCanonical(name: string): ModelDef | null {
+  return MODELS.find((m) => m.canonical === name) ?? null;
+}
