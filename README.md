@@ -138,6 +138,12 @@ turso db tokens create hossam                 # ← TURSO_AUTH_TOKEN (بصلاح
 5. **Deploy**. `vercel.json` داخل المجلد يضبط `maxDuration: 300` لكل الدوال + كرون يومي `/api/cron` الساعة 3 فجرًا.
 6. خذ نطاق المشروع وضعه في `MERGER_API_BASE` لمشروع MCP ثم أعد النشر (Redeploy).
 
+> ⚠️ **مهم — عطّل حماية النشر في Vercel (Deployment Protection):**
+> افتراضيًا تُحمي Vercel كل عمليات النشر بـ *Vercel Authentication* فتُعاد توجيه أي طلب مجهول (302) إلى صفحة تسجيل دخول، وبالتالي يفشل اتصال خادم MCP بخدمة الدمج حتى لو كان النشر سليمًا. الحل بعد أول نشر:
+> **Project → Settings → Deployment Protection → Vercel Authentication = Disabled** (احفظ ثم أعد النشر إن لزم).
+> وللحصول على نطاق ثابت لا يتغير مع كل نشر: **Deployments → ⋯ → Promote to Production** واستخدم نطاق الإنتاج في `MERGER_API_BASE`.
+> اختبار سريع: `curl -s $MERGER/api/config` يجب أن يعيد JSON — إن ظهرت `Protected by Vercel Authentication` فالحماية ما زالت مفعّلة.
+
 ### د) التجربة بعد النشر بـ curl
 
 ```bash
