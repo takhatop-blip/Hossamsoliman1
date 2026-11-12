@@ -5,8 +5,12 @@ import time
 import urllib.request
 from pathlib import Path
 
-TOKEN_NEW = 'REDACTED'  # scope: hossam-merger
-TOKEN_OLD = 'REDACTED'  # scope: team_hSLF… (MCP)
+# التوكنات تُقرأ من متغيرات البيئة — لا تضع أي توكن مكتوبًا داخل الكود (المستودع عام!)
+# الاستخدام: VERCEL_TOKEN_MERGER=xxx VERCEL_TOKEN_MCP=xxx python3 scripts/merger_finish2.py
+import os
+
+TOKEN_NEW = os.environ.get("VERCEL_TOKEN_MERGER", "")  # scope: hossam-merger
+TOKEN_OLD = os.environ.get("VERCEL_TOKEN_MCP", "")  # scope: team_hSLF… (MCP)
 TEAM_OLD = 'team_hSLFfBZxxJgiJBF24fsBr24R'
 MCP_PRJ = 'hossamsoliman1'
 ORG, REPO = 'takhatop-blip', 'Hossamsoliman1'

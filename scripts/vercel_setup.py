@@ -5,7 +5,11 @@ import sys
 import urllib.request
 from pathlib import Path
 
-TOKEN = 'REDACTED'
+# التوكن يُقرأ من متغير البيئة — لا تضع أي توكن مكتوبًا داخل الكود (المستودع عام!)
+# الاستخدام: VERCEL_TOKEN_MCP=xxxx python3 scripts/vercel_setup.py
+import os
+
+TOKEN = os.environ.get("VERCEL_TOKEN_MCP", "")
 TEAM = 'team_hSLFfBZxxJgiJBF24fsBr24R'
 MCP_PRJ = 'hossamsoliman1'
 MCP_PRJ_ID = 'prj_VYmJH7XwLRuhpjEfpWAfeqUhifub'
