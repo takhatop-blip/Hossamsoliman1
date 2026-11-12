@@ -20,7 +20,10 @@ import {
   type ErrorClass,
   type ProviderError,
 } from "./keys";
-import { mergerBase, createMergerJob, getMergerJob, processMergerJob, createMergerSlideshow, getMergerSlideshow, processMergerSlideshow, type MergerJobState } from "./merger";
+import { mergerBase, createMergerJob, getMergerJob, processMergerJob, type MergerJobState } from "./merger";
+// processMergerSlideshow/getMergerSlideshow/createMergerSlideshow لم تعد مستخدمة — التعليق المصوّر صار داخليًا
+import { insertSsJob, getSsJob, cleanupExpiredSs, type SsJobRow } from "./slideshow/jobs";
+import { slideshowSelfBase } from "./slideshow/base";
 import { modelByCanonical, type ModelDef, type MediaType, type ProviderId, type TaskProvider } from "./models";
 import { cometapiAdapter } from "./providers/cometapi";
 import { kieAdapter } from "./providers/kie";
@@ -405,9 +408,12 @@ export async function refreshTask(taskId: string): Promise<TaskRow | null> {
   if (!task) return null;
   if (task.status === "completed" || task.status === "failed") return task;
 
-  // دمج / تعليق مصوّر: منطق merger مستقل — نفرّق بالموديل
+  // دمج / تعليق مصوّر: منطق مستقل — نفرّق بالموديل والمزود
+  if (task.provider === "slideshow" || (task.provider === "merger" && task.model === SLIDESHOW_MODEL)) {
+    return refreshSlideshowTask(task);
+  }
   if (task.provider === "merger") {
-    return task.model === SLIDESHOW_MODEL ? refreshSlideshowTask(task) : refreshMergeTask(task);
+    return refreshMergeTask(task);
   }
 
   // لم تُنشأ بعد لدى المزود ⇒ إعادة محاولة الإنشاء (بتهدئة)
@@ -441,14 +447,14 @@ export async function refreshTask(taskId: string): Promise<TaskRow | null> {
 // قفل بالذاكرة حتى لا يتزامن نداء process مع get_task (بند 7.3.3)
 const processInFlight = new Set<string>();
 
-async function fireProcessOnce(taskId: string, jobId: string, kind: "merge" | "slideshow"): Promise<void> {
+/** إطلاق معالجة الدمج في خدمة الدمج — خلفيًا بمرة واحدة فقط لكل jobId */
+async function fireProcessOnce(taskId: string, jobId: string): Promise<void> {
   if (processInFlight.has(jobId)) return;
   processInFlight.add(jobId);
   // إطلاق خلفي بمرة واحدة فقط — النتيجة تُقرأ لاحقًا من GET الحالة
   void (async () => {
     try {
-      if (kind === "slideshow") await processMergerSlideshow(jobId);
-      else await processMergerJob(jobId);
+      await processMergerJob(jobId);
     } catch {
       // فشل process المعلن يظهر في GET status كذلك — لا نتعامل هنا
     } finally {
@@ -570,7 +576,7 @@ export async function runMerge(opts: {
   }
 
   await updateTask(taskId, { provider_task_id: jobId, status: "processing", progress: 5 });
-  await fireProcessOnce(taskId, jobId, "merge");
+  await fireProcessOnce(taskId, jobId);
 
   // نافذة الانتظار الافتراضية 60 ثانية — استعلام كل 3 ثوانٍ وكتابة الحالة فورًا
   const waitSeconds = clampWait(opts.wait_seconds, 60);
@@ -616,7 +622,7 @@ export async function refreshMergeTask(task: TaskRow): Promise<TaskRow> {
         status: "processing",
         error_message: null,
       });
-      await fireProcessOnce(task.id, created.jobId, "merge");
+      await fireProcessOnce(task.id, created.jobId);
     } catch {
       await updateTask(task.id, { params_merge: { _lastCreateAttempt: new Date().toISOString() } });
     }
@@ -632,7 +638,7 @@ export async function refreshMergeTask(task: TaskRow): Promise<TaskRow> {
   } catch {
     meta = {};
   }
-  if (!meta.processStarted) await fireProcessOnce(task.id, jobId, "merge");
+  if (!meta.processStarted) await fireProcessOnce(task.id, jobId);
 
   try {
     const st = await getMergerJob(jobId);
@@ -783,6 +789,57 @@ export interface SlideshowOutcome {
   error?: string;
 }
 
+/* ============================================================
+ *   المحرك الداخلي للتعليق المصوّر (نفس التطبيق — بلا خدمة خارجية)
+ * ============================================================
+ * - مهمة التعليق تُخزَّن في ss_jobs (نفس قاعدة Turso) وتُنفَّذ في دالة
+ *   serverless مستقلة عبر نداء ذاتي POST /api/slideshow/{id}/process
+ *   (ffmpeg + TTS مجاني داخل الدالة، maxDuration 300).
+ * - الحالة تُقرأ من قاعدة البيانات مباشرة (بلا HTTP) في كل get_task.
+ * - الناتج يُبَث من /api/slideshow/{id}/video بدعم Range 206.
+ */
+
+/** إطلاق المعالجة الخلفية — نداء ذاتي بمرة واحدة فقط لكل jobId */
+async function fireSsProcess(jobId: string): Promise<void> {
+  const lockKey = `ss:${jobId}`;
+  if (processInFlight.has(lockKey)) return;
+  processInFlight.add(lockKey);
+  void (async () => {
+    try {
+      const res = await fetch(`${slideshowSelfBase()}/api/slideshow/${encodeURIComponent(jobId)}/process`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        // المعالجة قد تستغرق حتى 300 ثانية — نصون الاتصال حتى تكتمل
+        signal: AbortSignal.timeout(310_000),
+      });
+      await res.text().catch(() => {});
+    } catch {
+      // فشل الإطلاق يظهر في حالة المهمة — get_task يعيد إطلاقه إن لم تكتمل
+    } finally {
+      processInFlight.delete(lockKey);
+    }
+  })();
+}
+
+/** خريطة حالة مهمة التعليق إلى تحديثات المهمة الرئيسية */
+async function applySsState(taskId: string, job: SsJobRow): Promise<"done" | "failed" | "continue"> {
+  if (job.status === "done") {
+    const url = job.result_url || `${slideshowSelfBase()}/api/slideshow/${job.id}/video`;
+    await updateTask(taskId, {
+      status: "completed",
+      progress: 100,
+      result_urls: [url],
+    });
+    return "done";
+  }
+  if (job.status === "failed") {
+    await updateTask(taskId, { status: "failed", error_message: clientSafeError(job.error ?? "فشل بناء الفيديو") });
+    return "failed";
+  }
+  await updateTask(taskId, { status: "processing", progress: job.progress });
+  return "continue";
+}
+
 /** فيديو تعليق مصوّر: صور (روابط أو أوصاف) + نص راوي أو صوت جاهز */
 export async function runSlideshow(opts: {
   images: string[];
@@ -813,7 +870,7 @@ export async function runSlideshow(opts: {
   const taskId = randomUUID();
   await insertTask({
     id: taskId,
-    provider: "merger",
+    provider: "slideshow",
     model: SLIDESHOW_MODEL,
     type: "video",
     prompt: narration ? `تعليق مصوّر: ${narration.slice(0, 80)}` : `تعليق مصوّر (${images.length} صور بصوت جاهز)`,
@@ -832,62 +889,61 @@ export async function runSlideshow(opts: {
     return { task: await getTask(taskId) };
   }
 
-  // 2) إنشاء المهمة في خدمة الدمج
-  let jobId: string;
+  // 2) تنظيف كسول + إنشاء مهمة التعليق في قاعدة البيانات
+  void cleanupExpiredSs().catch(() => {});
+  const jobId = randomUUID();
   try {
-    const created = await createMergerSlideshow({
+    await insertSsJob(jobId, {
       images: urls,
       narration_text: narration || undefined,
       audio_url: audioUrl || undefined,
       voice_lang: opts.voice_lang || "ar",
-      per_image_seconds: opts.per_image_seconds,
+      per_image_seconds: opts.per_image_seconds ?? 5,
       resolution,
       aspect_ratio: aspect,
     });
-    jobId = created.jobId;
   } catch (e) {
-    const pe = e as ProviderError;
-    const terminal = (pe as ProviderError & { mergerTerminal?: boolean }).mergerTerminal === true;
-    if (terminal) {
-      await updateTask(taskId, { status: "failed", error_message: clientSafeError(pe.message) });
-      return { task: await getTask(taskId) };
-    }
+    // فشل إنشاء مهمة التعليق (قاعدة بيانات مثلاً) — تُخزّن المعطيات وتُعاد المحاولة مع get_task
+    const msg = e instanceof Error ? e.message : String(e);
     await updateTask(taskId, {
       status: "processing",
       error_message: "تعذر إنشاء مهمة التعليق الآن — ستُعاد المحاولة تلقائيًا مع get_task",
-      params_merge: { _lastCreateAttempt: new Date().toISOString(), _slideshow: { images: urls, narration_text: narration, audio_url: audioUrl, voice_lang: opts.voice_lang || "ar", per_image_seconds: opts.per_image_seconds, resolution, aspect_ratio: aspect } },
+      params_merge: {
+        _lastCreateAttempt: new Date().toISOString(),
+        _ssImages: urls,
+        _ssParams: {
+          narration_text: narration || undefined,
+          audio_url: audioUrl || undefined,
+          voice_lang: opts.voice_lang || "ar",
+          per_image_seconds: opts.per_image_seconds ?? 5,
+          resolution,
+          aspect_ratio: aspect,
+        },
+        _ssError: msg.slice(0, 200),
+      },
     });
     return { task: await getTask(taskId) };
   }
+  await updateTask(taskId, { provider_task_id: jobId, status: "processing", progress: 5, params_merge: { _ssImages: urls } });
+  await fireSsProcess(jobId);
 
-  await updateTask(taskId, { provider_task_id: jobId, status: "processing", progress: 5 });
-  await fireProcessOnce(taskId, jobId, "slideshow");
-
-  // 3) نافذة انتظار مع بث التقدم
+  // 3) نافذة انتظار مع بث التقدم — الحالة من قاعدة البيانات مباشرة
   const waitSeconds = clampWait(opts.wait_seconds, 120);
   const deadline = Date.now() + waitSeconds * 1000;
   while (Date.now() < deadline) {
     await sleep(POLL_INTERVAL_MS);
-    let st: MergerJobState;
-    try {
-      st = await getMergerSlideshow(jobId);
-    } catch (e) {
-      const pe = e as ProviderError;
-      if ((pe as ProviderError & { mergerTerminal?: boolean }).mergerTerminal) {
-        await updateTask(taskId, { status: "failed", error_message: clientSafeError(pe.message) });
-        return { task: await getTask(taskId) };
-      }
-      continue;
-    }
-    const r = await applyMergerState(taskId, st);
+    const job = await getSsJob(jobId);
+    if (!job) continue;
+    const r = await applySsState(taskId, job);
     if (r === "done" || r === "failed") return { task: await getTask(taskId) };
-    await opts.onProgress?.(st.progress, `بناء الفيديو… ${st.progress}%`);
+    await opts.onProgress?.(job.progress, `بناء الفيديو… ${job.progress}%`);
   }
   return { task: await getTask(taskId) };
 }
 
-/** تتبع مهمة تعليق مصوّر جارية عبر get_task — نفس منطق الدمج مع إنشاء/معالجة slideshow */
+/** تتبع مهمة تعليق مصوّر جارية عبر get_task — إنشاء المعالجة إن لزم ثم قراءة الحالة */
 export async function refreshSlideshowTask(task: TaskRow): Promise<TaskRow> {
+  // لم تُنشأ مهمة التعليق بعد ⇒ إعادة المحاولة بعد تهدئة (من المعطيات المخزّنة)
   if (!task.provider_task_id) {
     let meta: Record<string, unknown> = {};
     try {
@@ -895,27 +951,37 @@ export async function refreshSlideshowTask(task: TaskRow): Promise<TaskRow> {
     } catch {
       meta = {};
     }
-    const ss = (meta._slideshow ?? null) as
-      | { images: string[]; narration_text?: string; audio_url?: string; voice_lang?: string; per_image_seconds?: number; resolution?: string; aspect_ratio?: string }
-      | null;
     const last = typeof meta._lastCreateAttempt === "string" ? Date.parse(meta._lastCreateAttempt) : 0;
-    if (!ss || Date.now() - last < COOLDOWN_MS) return task;
+    if (Date.now() - last < COOLDOWN_MS) return task;
     try {
-      const created = await createMergerSlideshow({
-        images: ss.images,
-        narration_text: ss.narration_text || undefined,
-        audio_url: ss.audio_url || undefined,
-        voice_lang: ss.voice_lang || "ar",
-        per_image_seconds: ss.per_image_seconds,
-        resolution: ss.resolution || "720p",
-        aspect_ratio: ss.aspect_ratio || "16:9",
+      // روابط الصور: المخزّنة المحلولة أولًا، وإلا حل الأصول (روابط تُمرّر، أوصاف تُولّد)
+      let imgs = (meta._ssImages as string[] | undefined) ?? [];
+      if (!imgs.length) {
+        const orig = (meta.images as string[] | undefined) ?? [];
+        if (!orig.length) throw new Error("لا توجد صور محفوظة لإعادة محاولة التعليق المصوّر");
+        imgs = orig.every((u) => /^https?:\/\//i.test(u))
+          ? orig
+          : await resolveImageUrls(orig, (meta.aspect_ratio as string) || "16:9", 60);
+      }
+      const sp = (meta._ssParams ?? {}) as { narration_text?: string; audio_url?: string; voice_lang?: string; per_image_seconds?: number; resolution?: string; aspect_ratio?: string };
+      const jobId = randomUUID();
+      await insertSsJob(jobId, {
+        images: imgs,
+        narration_text: sp.narration_text || (meta.narration_text as string) || undefined,
+        audio_url: sp.audio_url || (meta.audio_url as string) || undefined,
+        voice_lang: sp.voice_lang || (meta.voice_lang as string) || "ar",
+        per_image_seconds: sp.per_image_seconds ?? (meta.per_image_seconds as number) ?? 5,
+        resolution: sp.resolution || (meta.resolution as string) || "720p",
+        aspect_ratio: sp.aspect_ratio || (meta.aspect_ratio as string) || "16:9",
       });
       await updateTask(task.id, {
-        provider_task_id: created.jobId,
+        provider_task_id: jobId,
+        provider: "slideshow",
         status: "processing",
         error_message: null,
+        params_merge: { _ssImages: imgs },
       });
-      await fireProcessOnce(task.id, created.jobId, "slideshow");
+      await fireSsProcess(jobId);
     } catch {
       await updateTask(task.id, { params_merge: { _lastCreateAttempt: new Date().toISOString() } });
     }
@@ -923,22 +989,16 @@ export async function refreshSlideshowTask(task: TaskRow): Promise<TaskRow> {
   }
 
   const jobId = task.provider_task_id;
-  let meta2: Record<string, unknown> = {};
-  try {
-    meta2 = JSON.parse(task.params_json || "{}");
-  } catch {
-    meta2 = {};
-  }
-  if (!meta2.processStarted) await fireProcessOnce(task.id, jobId, "slideshow");
-
-  try {
-    const st = await getMergerSlideshow(jobId);
-    await applyMergerState(task.id, st);
-  } catch (e) {
-    const pe = e as ProviderError;
-    if ((pe as ProviderError & { mergerTerminal?: boolean }).mergerTerminal) {
-      await updateTask(task.id, { status: "failed", error_message: clientSafeError(pe.message) });
-    }
+  const job = await getSsJob(jobId);
+  if (job) {
+    await applySsState(task.id, job);
+  } else {
+    // مهمة التعليق مفقودة من القاعدة (حُذفت بعد 24 ساعة مثلاً) — صفّر الربط لتُعاد المحاولة
+    await updateTask(task.id, {
+      provider_task_id: null,
+      params_merge: { _lastCreateAttempt: new Date(0).toISOString() },
+    });
+    return refreshSlideshowTask((await getTask(task.id))!);
   }
   return (await getTask(task.id))!;
 }

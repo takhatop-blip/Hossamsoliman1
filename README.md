@@ -98,14 +98,28 @@ node scripts/test-http.js # 28 اختبار HTTP: دمج/بث Range 206/مهمة
 | POST | `/api/jobs/<id>/process` | تنفيذ الدمج كاملًا (متزامن) → `{status:"done", videoUrl, downloadUrl, size, duration, resolution}` أو `202` إن كانت جارية |
 | GET | `/api/jobs/<id>` | الحالة + التقدم 0–100 + الرابط عند الاكتمال |
 | GET | `/api/jobs/<id>/video` | بث MP4 بدعم **Range (206 + Content-Range)** — `?download=1` للتحميل |
-| POST | `/api/slideshow` | إنشاء مهمة تعليق مصوّر (`{"images":[...], "narration_text"\|"audio_url", resolution, aspect_ratio}`) — صور 1–20 |
-| POST | `/api/slideshow/<id>/process` | تنفيذ كامل: تنزيل الصور + TTS مجاني + ترميز → `{status:"done", videoUrl, ...}` أو `202` |
-| GET | `/api/slideshow/<id>` | حالة مهمة التعليق المصوّر (نفس شكل مهام الدمج) |
+| POST | `/api/slideshow` | **(في الكود — النسخة المنشورة لا تتضمنها بعد)** إنشاء مهمة تعليق مصوّر — المحرك انتقل داخل تطبيق MCP (الجدول التالي) |
+| POST | `/api/slideshow/<id>/process` | **(في الكود)** تنفيذ كامل: تنزيل الصور + TTS مجاني + ترميز |
+| GET | `/api/slideshow/<id>` | **(في الكود)** حالة مهمة التعليق المصوّر |
 | DELETE | `/api/jobs/<id>` | حذف فوري شامل |
 | GET | `/api/config` | الحدود العامة + version (فحص الجهوزية) |
 | GET | `/api/cron` | حذف المهام المنتهية (كرون يومي + تنظيف كسول عند الإنشاء/الدمج) |
 
 الواجهة (عربية RTL، ثيم داكن بتدرجات سماوي/بنفسجي): إضافة روابط + سحب وإفلات ملفات (mp4/mov/webm/mkv/avi/m4v/mpg/3gp) + إعادة ترتيب بالسحب أو ↑↓ + رفع أجزاء 4MB بإعادة محاولة ×3 + شريط تقدم حقيقي من تقدم الخادم + مشغل نتيجة بحجم/مدة/دقة + عدّاد تنازلي 24 ساعة + توثيق API قابل للطي + استئناف العرض عبر `#job=<id>`.
+
+### محرك التعليق المصوّر الداخلي (تطبيق MCP — يعمل الآن على الإنتاج)
+
+لماذا داخليًا؟ لأن تحديث خدمة الدمج المنشورة يتطلب Redeploy يدويًا بتوكن Vercel (تكامل Git ينشر تطبيق MCP فقط)، فنُقل المحرك (ffmpeg + TTS) إلى تطبيق MCP نفسه لينشر تلقائيًا مع كل push.
+
+| Method | Endpoint (على نطاق تطبيق MCP) | الوظيفة |
+|---|---|---|
+| POST | `/api/slideshow/<id>/process` | تنفيذ كامل في دالة مستقلة (maxDuration 300): تنزيل الصور → TTS مجاني (Google Translate، تقسيم جمل ≤180 حرف + دمج ffmpeg) → ترميز H.264+AAC → تخزين صفوف 2MB في Turso |
+| GET | `/api/slideshow/<id>` | حالة المهمة (status/progress/videoUrl عند الاكتمال) |
+| GET | `/api/slideshow/<id>/video` | بث MP4 بدعم **Range (206)** — `?download=1` للتحميل |
+
+- التخزين: جدولا `ss_jobs` و `ss_output_chunks` في نفس قاعدة Turso (بادئة ss_ تفصلها عن جداول الدمج) — الاحتفاظ 24 ساعة مع تنظيف كسول.
+- رابط النتيجة يُبنى من `VERCEL_PROJECT_PRODUCTION_URL` (دومين الإنتاج الثابت) — يمكن تجاوزه بـ `PUBLIC_BASE_URL`.
+- المنسّق يطلق المعالجة بنداء ذاتي ثم يقرأ الحالة من قاعدة البيانات مباشرة في كل `get_task` — إن سقطت الدالة تُعاد المعالجة تلقائيًا.
 
 ---
 
@@ -232,7 +246,7 @@ curl -s -o merged.mp4 "$MERGER/api/jobs/$JOB/video?download=1"
 - ✅ **merger**: 11 اختبار وحدة + 28 اختبار HTTP (الدقة=أكبر دقة، المدة=المجموع، صوت، sha256 للتخزين، رفع أجزاء، 413، حذف شامل، 404، 400).
 - ✅ **الواجهة** (متصفح حقيقي): RTL عربية، إضافة/تعطيل/حذف مفتاح، لوحة مهام تتحدث كل 5 ثوانٍ، JSON ربط لكل تبويب.
 - ✅ **Pollinations e2e حي (2026-11-12)**: `generate_image` عبر MCP على النسخة المنشورة مع مفتاح kie مستنزف ولا مفتاح cometapi ⇒ نجحت الصورة خلال ~10 ثوانٍ عبر Pollinations المجاني تلقائيًا (JPEG 1024×1024، الرابط يعيد الصورة فعليًا HTTP 200 image/jpeg) — احتياط المزود الأخير يعمل كما صُمم.
-- ✅ **التعليق المصوّر e2e محلي (2026-11-12)**: صورتان عبر روابط + نص راوي عربي (3 أجزاء TTS) ⇒ MP4 نهائي 29.28 ث (h264 1280×720 + **مقطع صوتي AAC للراوي**) في ~7 ثوانٍ، Range 206 يعمل — وأداة `generate_narrated_video` حيّة على خادم MCP المنشور بمعاملاتها الثمانية (نشر خدمة merger يحتاج Redeploy يدويًا — انظر ملاحظة النشر أدناه).
+- ✅ **التعليق المصوّر — المحرك الداخلي (2026-11-12)**: نُقل المحرك (TTS + ffmpeg) داخل تطبيق MCP لينشر تلقائيًا مع كل push. اختبار محلي للمحرك: صورتان + نص راوي عربي (TTS حقيقي 17.4 ث، متوسط الصوت ‎-22dB) ⇒ MP4 h264 854×480 + AAC ستيريو مدته مطابقة للصوت تمامًا في 3.3 ثوانٍ — و`next build` ينجح بكل مسارات `/api/slideshow/*`. نتيجة الاختبار الحي الكامل على الإنتاج تُوثَّق عند توفرها.
 - ✅ `tsc --noEmit` نظيف + `next build` ينجح + ESLint نظيف.
 
 ## 7) بنية المستودع
@@ -240,7 +254,8 @@ curl -s -o merged.mp4 "$MERGER/api/jobs/$JOB/video?download=1"
 ```
 ├── src/
 │   ├── lib/                 # turso.ts · keys.ts · models.ts · merger.ts · orchestrator.ts
-│   │   └── providers/       # types.ts · kie.ts · cometapi.ts · pollinations.ts
+│   │   ├── providers/       # types.ts · kie.ts · cometapi.ts · pollinations.ts
+│   │   └── slideshow/       # ffmpeg.ts · tts.ts · builder.ts · jobs.ts · base.ts (محرك التعليق الداخلي)
 │   └── app/
 │       ├── mcp/route.ts     # خادم MCP (SDK رسمي: McpServer + WebStandardStreamableHTTP)
 │       ├── api/health       # جهوزية + فحص خدمة الدمج
