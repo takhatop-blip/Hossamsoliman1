@@ -1,0 +1,11 @@
+{
+  "source": "Hacker News (Show HN) — بيانات حية جُلبت 2026-11-12، أفضل 5 أدوات AI بالنقاط في آخر 30 يومًا",
+  "tools": [
+    {"title": "DocuMemory – Persistent memory and context for AI coding tools", "points": 6, "url": "https://www.documemory.dev/"},
+    {"title": "Here's My AI – Find the AI tools worth your time", "points": 4, "url": "https://heresmyai.com/"},
+    {"title": "AI tool that turns two photos into a dance video", "points": 3, "url": "https://a2oliteai.com/"},
+    {"title": "AI Workflows – 32 step-by-step workflows built from 146 AI tools", "points": 3, "url": "https://aiworkflows.tools/workflows"},
+    {"title": "PolicyPeek – checked 66 AI tools' privacy policies for AI training", "points": 3, "url": "https://getpolicypeek.com/"}
+  ],
+  "narration": "أهلاً بكم في جديد أدوات الذكاء الاصطناعي هذا الأسبوع، مختارة من مشاريع حقيقية أطلقها مطورون حول العالم. الأداة الأولى: دوكو ميموري، تضيف ذاكرة دائمة وسياقًا مستمرًا لأدوات البرمجة بالذكاء الاصطناعي، فلم يعد مساعدك البرمجي ينسى مشروعك. الأداة الثانية: هيرز ماي إيه آي، محرك بحث يساعدك على إيجاد أدوات الذكاء الاصطناعي الجديرة بوقتك فعلًا من بين آلاف الأدوات المتاحة. الأداة الثالثة: تجربة ممتعة تتيح تحويل صورتين فقط إلى فيديو رقص كامل بالذكاء الاصطناعي. والأداة الرابعة: إيه آي وركفلو، مكتبة تضم اثنين وثلاثين سير عمل جاهزًا خطوة بخطوة، مبنية من مئة وستة وأربعين أداة ذكاء اصطناعي. والأداة الخامسة: بوليسي بيك، التي فحصت سياسات الخصوصية لست وستين أداة ذكاء اصطناعي لتخبرك أي منها يدرّب نماذجه على بياناتك. هذا كان موجز الجديد، تابعونا كل أسبوع مع المزيد!"
+}
