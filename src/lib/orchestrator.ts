@@ -20,7 +20,7 @@ import {
   type ErrorClass,
   type ProviderError,
 } from "./keys";
-import { mergerBase, createMergerJob, getMergerJob, processMergerJob, type MergerJobState } from "./merger";
+import { mergerBase, createMergerJob, getMergerJob, processMergerJob, createMergerSlideshow, getMergerSlideshow, processMergerSlideshow, type MergerJobState } from "./merger";
 import { modelByCanonical, type ModelDef, type MediaType, type ProviderId, type TaskProvider } from "./models";
 import { cometapiAdapter } from "./providers/cometapi";
 import { kieAdapter } from "./providers/kie";
@@ -40,6 +40,9 @@ const ADAPTERS: Record<string, ProviderAdapter> = {
   cometapi: cometapiAdapter,
   pollinations: pollinationsAdapter,
 };
+
+/** موديل التعليق المصوّر في جدول المهام — يميّز مسار slideshow عن merge عند provider=merger */
+const SLIDESHOW_MODEL = "narrated-slideshow";
 
 /** مزود بلا مفتاح — يُحقن كمرشّح مصطنع في آخر الترتيب التسلسلي إن لم يوجد مفتاح حقيقي له */
 const KEYLESS_PROVIDERS = new Set<string>(["pollinations"]);
@@ -402,8 +405,10 @@ export async function refreshTask(taskId: string): Promise<TaskRow | null> {
   if (!task) return null;
   if (task.status === "completed" || task.status === "failed") return task;
 
-  // دمج: منطق مستقل
-  if (task.provider === "merger") return refreshMergeTask(task);
+  // دمج / تعليق مصوّر: منطق merger مستقل — نفرّق بالموديل
+  if (task.provider === "merger") {
+    return task.model === SLIDESHOW_MODEL ? refreshSlideshowTask(task) : refreshMergeTask(task);
+  }
 
   // لم تُنشأ بعد لدى المزود ⇒ إعادة محاولة الإنشاء (بتهدئة)
   if (!task.provider_task_id || !task.key_id) {
@@ -436,13 +441,14 @@ export async function refreshTask(taskId: string): Promise<TaskRow | null> {
 // قفل بالذاكرة حتى لا يتزامن نداء process مع get_task (بند 7.3.3)
 const processInFlight = new Set<string>();
 
-async function fireProcessOnce(taskId: string, jobId: string): Promise<void> {
+async function fireProcessOnce(taskId: string, jobId: string, kind: "merge" | "slideshow"): Promise<void> {
   if (processInFlight.has(jobId)) return;
   processInFlight.add(jobId);
-  // إطلاق خلفي بمرة واحدة فقط — النتيجة تُقرأ لاحقًا من GET /api/jobs/{id}
+  // إطلاق خلفي بمرة واحدة فقط — النتيجة تُقرأ لاحقًا من GET الحالة
   void (async () => {
     try {
-      await processMergerJob(jobId);
+      if (kind === "slideshow") await processMergerSlideshow(jobId);
+      else await processMergerJob(jobId);
     } catch {
       // فشل process المعلن يظهر في GET status كذلك — لا نتعامل هنا
     } finally {
@@ -564,7 +570,7 @@ export async function runMerge(opts: {
   }
 
   await updateTask(taskId, { provider_task_id: jobId, status: "processing", progress: 5 });
-  await fireProcessOnce(taskId, jobId);
+  await fireProcessOnce(taskId, jobId, "merge");
 
   // نافذة الانتظار الافتراضية 60 ثانية — استعلام كل 3 ثوانٍ وكتابة الحالة فورًا
   const waitSeconds = clampWait(opts.wait_seconds, 60);
@@ -610,7 +616,7 @@ export async function refreshMergeTask(task: TaskRow): Promise<TaskRow> {
         status: "processing",
         error_message: null,
       });
-      await fireProcessOnce(task.id, created.jobId);
+      await fireProcessOnce(task.id, created.jobId, "merge");
     } catch {
       await updateTask(task.id, { params_merge: { _lastCreateAttempt: new Date().toISOString() } });
     }
@@ -626,7 +632,7 @@ export async function refreshMergeTask(task: TaskRow): Promise<TaskRow> {
   } catch {
     meta = {};
   }
-  if (!meta.processStarted) await fireProcessOnce(task.id, jobId);
+  if (!meta.processStarted) await fireProcessOnce(task.id, jobId, "merge");
 
   try {
     const st = await getMergerJob(jobId);
@@ -677,4 +683,262 @@ export function formatTaskForClient(task: TaskRow): string {
     `التقدم الحالي: ${pct}%\n` +
     `تابع بـ get_task كل ~10 ثوانٍ حتى تكتمل.`
   );
+}
+
+/* ============================================================
+ *      التعليق المصوّر — runSlideshow (صور + صوت راوي)
+ * ============================================================ */
+
+/**
+ * حل عناصر الصور: الروابط المباشرة تُمرَّر كما هي، والنصوص تُولَّد كصور
+ * بالترتيب التسلسلي (المفاتيح أولًا ثم Pollinations المجاني أخيرًا).
+ * حد المعدل المجاني (صورة كل ~45 ث/‏IP) يُعالج بانتظار retryAfterMs حتى سقف waitSeconds.
+ */
+async function resolveImageUrls(
+  items: string[],
+  aspect: string,
+  waitSeconds: number,
+  onProgress?: ProgressCb
+): Promise<string[]> {
+  const imageModel = modelByCanonical("gpt-image-2-6/flare-text-to-image");
+  if (!imageModel) throw new Error("موديل الصور غير معرّف");
+  const deadline = Date.now() + waitSeconds * 1000;
+  const prompts = items.filter((i) => !/^https?:\/\//i.test(i)).length;
+  const urls: string[] = [];
+  let generated = 0;
+
+  for (let idx = 0; idx < items.length; idx++) {
+    const item = items[idx].trim();
+    if (/^https?:\/\//i.test(item)) {
+      urls.push(item);
+      continue;
+    }
+    let done = false;
+    let lastErr = "";
+    while (!done && Date.now() < deadline) {
+      const pool = await getKeyPool(imageModel.providers);
+      for (const p of imageModel.providers) {
+        if (!KEYLESS_PROVIDERS.has(p)) continue;
+        if (pool.some((c) => c.provider === p)) continue;
+        pool.push(syntheticKeyCandidate(p, pool.length));
+      }
+      let retriable = false;
+      for (const cand of pool) {
+        const adapter = ADAPTERS[cand.provider];
+        if (!adapter?.createImageSync) continue;
+        const providerModel = imageModel.providerModel[cand.provider as ProviderId] ?? "";
+        try {
+          const { urls: u } = await adapter.createImageSync(
+            { id: cand.key.id, api_key: cand.key.api_key, label: cand.key.label || "" },
+            providerModel,
+            { prompt: item, aspect_ratio: aspect }
+          );
+          if (u.length) {
+            urls.push(u[0]);
+            done = true;
+          }
+          break;
+        } catch (e) {
+          const pe = e as ProviderError;
+          const cls: ErrorClass =
+            pe && typeof pe === "object" && "class" in pe
+              ? (pe.class as ErrorClass)
+              : classifyProviderError(0, String(pe));
+          lastErr = pe instanceof Error ? pe.message : String(pe);
+          if (cls === "temporary") {
+            const wait = Math.min(
+              (pe as ProviderError & { retryAfterMs?: number }).retryAfterMs ?? 8_000,
+              Math.max(1_000, deadline - Date.now())
+            );
+            await sleep(wait);
+            retriable = true;
+            break; // أعد المحاولة من أول الترتيب بعد الانتظار
+          }
+          // disabled/exhausted/provider ⇒ المزود التالي فورًا
+          continue;
+        }
+      }
+      if (!done && !retriable && Date.now() < deadline) {
+        // كل المزودين فشلوا بأخطاء غير مؤقتة — لا فائدة من مواصلة الانتظار
+        throw new Error(`تعذر توليد الصورة ${generated + 1}: ${clientSafeError(lastErr)}`);
+      }
+    }
+    if (!done) {
+      throw new Error(
+        `انتهى وقت تجهيز الصور قبل الاكتمال — الوصول المجاني يسمح بصورة كل ~45 ثانية (${prompts} صور نصية ≈ ${prompts * 45} ث). ` +
+          `الحلول: مرّر روابط صور جاهزة بدل الأوصاف، أو قلّل عدد الصور، أو زد wait_seconds حتى 240.`
+      );
+    }
+    generated++;
+    await onProgress?.(
+      Math.round((generated / prompts) * 100),
+      `تجهيز الصور ${generated}/${prompts}…`
+    );
+  }
+  return urls;
+}
+
+export interface SlideshowOutcome {
+  task?: TaskRow | null;
+  error?: string;
+}
+
+/** فيديو تعليق مصوّر: صور (روابط أو أوصاف) + نص راوي أو صوت جاهز */
+export async function runSlideshow(opts: {
+  images: string[];
+  narration_text?: string;
+  audio_url?: string;
+  voice_lang?: string;
+  per_image_seconds?: number;
+  resolution?: string;
+  aspect_ratio?: string;
+  wait_seconds?: number;
+  onProgress?: ProgressCb;
+}): Promise<SlideshowOutcome> {
+  const images = (opts.images ?? []).map((s) => String(s || "").trim()).filter(Boolean);
+  if (images.length < 1) return { error: "❌ مرّر صورة واحدة على الأقل — رابط مباشر أو وصف نصي لتوليدها." };
+  if (images.length > 20) return { error: "❌ أقصى عدد صور هو 20." };
+  const narration = (opts.narration_text || "").trim();
+  const audioUrl = (opts.audio_url || "").trim();
+  if (!narration && !audioUrl) {
+    return { error: "❌ مرّر نص التعليق الصوتي narration_text أو رابط صوت جاهز audio_url." };
+  }
+  if (narration && audioUrl) {
+    return { error: "❌ مرّر narration_text أو audio_url — ليس الاثنين معًا." };
+  }
+  if (narration.length > 8000) return { error: "❌ نص التعليق طويل جدًا (الحد 8000 حرف)." };
+  const aspect = ["16:9", "9:16", "1:1"].includes(opts.aspect_ratio || "") ? opts.aspect_ratio! : "16:9";
+  const resolution = ["480p", "720p", "1080p"].includes(opts.resolution || "") ? opts.resolution! : "720p";
+
+  const taskId = randomUUID();
+  await insertTask({
+    id: taskId,
+    provider: "merger",
+    model: SLIDESHOW_MODEL,
+    type: "video",
+    prompt: narration ? `تعليق مصوّر: ${narration.slice(0, 80)}` : `تعليق مصوّر (${images.length} صور بصوت جاهز)`,
+    params: { images, narration_text: narration, audio_url: audioUrl, aspect_ratio: aspect, resolution },
+    status: "processing",
+  });
+
+  // 1) تجهيز روابط الصور (توليد للنصوص)
+  let urls: string[];
+  try {
+    const waitSeconds = clampWait(opts.wait_seconds, 120);
+    urls = await resolveImageUrls(images, aspect, waitSeconds, opts.onProgress);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    await updateTask(taskId, { status: "failed", error_message: clientSafeError(msg) });
+    return { task: await getTask(taskId) };
+  }
+
+  // 2) إنشاء المهمة في خدمة الدمج
+  let jobId: string;
+  try {
+    const created = await createMergerSlideshow({
+      images: urls,
+      narration_text: narration || undefined,
+      audio_url: audioUrl || undefined,
+      voice_lang: opts.voice_lang || "ar",
+      per_image_seconds: opts.per_image_seconds,
+      resolution,
+      aspect_ratio: aspect,
+    });
+    jobId = created.jobId;
+  } catch (e) {
+    const pe = e as ProviderError;
+    const terminal = (pe as ProviderError & { mergerTerminal?: boolean }).mergerTerminal === true;
+    if (terminal) {
+      await updateTask(taskId, { status: "failed", error_message: clientSafeError(pe.message) });
+      return { task: await getTask(taskId) };
+    }
+    await updateTask(taskId, {
+      status: "processing",
+      error_message: "تعذر إنشاء مهمة التعليق الآن — ستُعاد المحاولة تلقائيًا مع get_task",
+      params_merge: { _lastCreateAttempt: new Date().toISOString(), _slideshow: { images: urls, narration_text: narration, audio_url: audioUrl, voice_lang: opts.voice_lang || "ar", per_image_seconds: opts.per_image_seconds, resolution, aspect_ratio: aspect } },
+    });
+    return { task: await getTask(taskId) };
+  }
+
+  await updateTask(taskId, { provider_task_id: jobId, status: "processing", progress: 5 });
+  await fireProcessOnce(taskId, jobId, "slideshow");
+
+  // 3) نافذة انتظار مع بث التقدم
+  const waitSeconds = clampWait(opts.wait_seconds, 120);
+  const deadline = Date.now() + waitSeconds * 1000;
+  while (Date.now() < deadline) {
+    await sleep(POLL_INTERVAL_MS);
+    let st: MergerJobState;
+    try {
+      st = await getMergerSlideshow(jobId);
+    } catch (e) {
+      const pe = e as ProviderError;
+      if ((pe as ProviderError & { mergerTerminal?: boolean }).mergerTerminal) {
+        await updateTask(taskId, { status: "failed", error_message: clientSafeError(pe.message) });
+        return { task: await getTask(taskId) };
+      }
+      continue;
+    }
+    const r = await applyMergerState(taskId, st);
+    if (r === "done" || r === "failed") return { task: await getTask(taskId) };
+    await opts.onProgress?.(st.progress, `بناء الفيديو… ${st.progress}%`);
+  }
+  return { task: await getTask(taskId) };
+}
+
+/** تتبع مهمة تعليق مصوّر جارية عبر get_task — نفس منطق الدمج مع إنشاء/معالجة slideshow */
+export async function refreshSlideshowTask(task: TaskRow): Promise<TaskRow> {
+  if (!task.provider_task_id) {
+    let meta: Record<string, unknown> = {};
+    try {
+      meta = JSON.parse(task.params_json || "{}");
+    } catch {
+      meta = {};
+    }
+    const ss = (meta._slideshow ?? null) as
+      | { images: string[]; narration_text?: string; audio_url?: string; voice_lang?: string; per_image_seconds?: number; resolution?: string; aspect_ratio?: string }
+      | null;
+    const last = typeof meta._lastCreateAttempt === "string" ? Date.parse(meta._lastCreateAttempt) : 0;
+    if (!ss || Date.now() - last < COOLDOWN_MS) return task;
+    try {
+      const created = await createMergerSlideshow({
+        images: ss.images,
+        narration_text: ss.narration_text || undefined,
+        audio_url: ss.audio_url || undefined,
+        voice_lang: ss.voice_lang || "ar",
+        per_image_seconds: ss.per_image_seconds,
+        resolution: ss.resolution || "720p",
+        aspect_ratio: ss.aspect_ratio || "16:9",
+      });
+      await updateTask(task.id, {
+        provider_task_id: created.jobId,
+        status: "processing",
+        error_message: null,
+      });
+      await fireProcessOnce(task.id, created.jobId, "slideshow");
+    } catch {
+      await updateTask(task.id, { params_merge: { _lastCreateAttempt: new Date().toISOString() } });
+    }
+    return (await getTask(task.id))!;
+  }
+
+  const jobId = task.provider_task_id;
+  let meta2: Record<string, unknown> = {};
+  try {
+    meta2 = JSON.parse(task.params_json || "{}");
+  } catch {
+    meta2 = {};
+  }
+  if (!meta2.processStarted) await fireProcessOnce(task.id, jobId, "slideshow");
+
+  try {
+    const st = await getMergerSlideshow(jobId);
+    await applyMergerState(task.id, st);
+  } catch (e) {
+    const pe = e as ProviderError;
+    if ((pe as ProviderError & { mergerTerminal?: boolean }).mergerTerminal) {
+      await updateTask(task.id, { status: "failed", error_message: clientSafeError(pe.message) });
+    }
+  }
+  return (await getTask(task.id))!;
 }

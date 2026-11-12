@@ -113,7 +113,12 @@ function runFfmpeg(args, { totalDurationUs, onProgress }) {
     child.on("error", (e) => reject(new Error(`ffmpeg: ${e.message}`)));
     child.on("close", (code) => {
       if (code === 0) resolve();
-      else reject(new Error(`ffmpeg فشل (رمز ${code}): ${stderrTail.split("\n").slice(-3).join(" | ")}`));
+      else
+        reject(
+          new Error(
+            `ffmpeg فشل (رمز ${code}): ${stderrTail.split("\n").filter(Boolean).slice(-25).join(" | ")}`
+          )
+        );
     });
   });
 }
@@ -188,4 +193,4 @@ async function mergeVideos(files, outPath, onProgress) {
   };
 }
 
-module.exports = { ensureExecutable, probe, downloadToTemp, mergeVideos, FFMPEG_BIN, FFPROBE_BIN };
+module.exports = { ensureExecutable, probe, downloadToTemp, mergeVideos, runFfmpeg, FFMPEG_BIN, FFPROBE_BIN };

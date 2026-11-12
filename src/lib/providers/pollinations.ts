@@ -9,7 +9,7 @@
  * ثم نُلغي جسم الرد فورًا ونعيد **رابط التوليد نفسه** كرابط نتيجة —
  * الرابط عام ويُعيد الصورة لأي طالب (نفس prompt+seed ⇒ نتيجة ثابتة مؤقتًا عبر الكاش).
  */
-import { makeProviderError } from "../keys";
+import { makeProviderError, type ProviderError } from "../keys";
 import type {
   ProviderAdapter,
   ProviderImageInput,
@@ -66,7 +66,23 @@ async function assertImageAvailable(url: string): Promise<void> {
       throw makeProviderError(429, "pollinations rate limited", "temporary");
     }
     if (res.status === 402 || res.status === 403) {
-      // تغيّرت سياسة الوصول المجاني — نتعامل كنقص مورد (يُجرَّب مزود آخر)
+      // قياس حي (2026-11-12): 402 مع {"error":{"code":"FREE_LIMIT","message":"Free limit
+      // reached: 1 image every 45 seconds per IP. Retry after 37s..."}} ⇒ حد معدل مجاني
+      // مؤقت يُعاد بعده — ليس نفاد رصيد. غير ذلك (403 أو سياسة مرفوضة) ⇒ exhausted.
+      const bodyText = await res.text().catch(() => "");
+      const m = bodyText.match(/retry after (\d+)\s*s/i) || bodyText.match(/Retry after (\d+)/i);
+      if (/free.?limit|rate.?limit|retry after/i.test(bodyText)) {
+        const e = makeProviderError(
+          res.status,
+          `pollinations free limit: retry after ${m ? `${m[1]}s` : "45s"}`,
+          "temporary"
+        );
+        if (m) {
+          (e as ProviderError & { retryAfterMs?: number }).retryAfterMs =
+            (Number(m[1]) + 2) * 1000;
+        }
+        throw e;
+      }
       const msg = `pollinations free access rejected: HTTP ${res.status}`;
       throw makeProviderError(res.status, msg, "exhausted");
     }

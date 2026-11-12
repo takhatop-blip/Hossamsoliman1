@@ -65,6 +65,12 @@ function ensureSchema() {
           data BLOB NOT NULL,
           PRIMARY KEY (job_id, chunk)
         )`);
+      // معطيات مهام التعليق المصوّر (slideshow): الصور/النص/الصوت كJSON
+      await db.execute(`
+        CREATE TABLE IF NOT EXISTS slideshow_meta (
+          job_id TEXT PRIMARY KEY,
+          params TEXT NOT NULL
+        )`);
     })().catch((e) => {
       _schema = null;
       throw e;
@@ -190,6 +196,35 @@ async function writeSourceChunksToFile(jobId, seq, filePath, fs) {
   await new Promise((res) => out.end(res));
 }
 
+/* ---------------- slideshow meta ---------------- */
+
+async function setSlideshowMeta(jobId, params) {
+  await ensureSchema();
+  await getDb().execute({
+    sql: `INSERT OR REPLACE INTO slideshow_meta (job_id, params) VALUES (?, ?)`,
+    args: [jobId, JSON.stringify(params)],
+  });
+}
+
+async function getSlideshowMeta(jobId) {
+  await ensureSchema();
+  const r = await getDb().execute({
+    sql: `SELECT params FROM slideshow_meta WHERE job_id = ?`,
+    args: [jobId],
+  });
+  if (!r.rows.length) return null;
+  try {
+    return JSON.parse(String(r.rows[0].params));
+  } catch {
+    return null;
+  }
+}
+
+async function deleteSlideshowMeta(jobId) {
+  await ensureSchema();
+  await getDb().execute({ sql: `DELETE FROM slideshow_meta WHERE job_id = ?`, args: [jobId] });
+}
+
 /* ---------------- أجزاء الناتج ---------------- */
 
 /** تقسيم ملف ناتج إلى صفوف 2MB وتخزينها */
@@ -301,5 +336,8 @@ module.exports = {
   getOutputSize,
   streamOutput,
   cleanupExpired,
+  setSlideshowMeta,
+  getSlideshowMeta,
+  deleteSlideshowMeta,
   nowIso,
 };

@@ -164,6 +164,74 @@ export async function mergerHealthy(): Promise<boolean> {
   }
 }
 
+/* ============================================================
+ *      التعليق المصوّر (Slideshow) — صور + صوت راوي
+ * ============================================================ */
+
+export interface SlideshowInput {
+  images: string[];
+  narration_text?: string;
+  audio_url?: string;
+  voice_lang?: string;
+  per_image_seconds?: number;
+  resolution?: string; // 480p | 720p | 1080p
+  aspect_ratio?: string; // 16:9 | 9:16 | 1:1
+}
+
+/** إنشاء مهمة تعليق مصوّر — POST /api/slideshow */
+export async function createMergerSlideshow(input: SlideshowInput): Promise<MergerJobCreated> {
+  const { httpStatus, body } = await mergerFetch(
+    `${BASE}/api/slideshow`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    },
+    30_000
+  );
+  if (httpStatus >= 400 || !body) {
+    throw makeMergerTerminalError(extract(body, `merger createSlideshow HTTP ${httpStatus}`));
+  }
+  const jobId = typeof body.jobId === "string" ? body.jobId : null;
+  if (!jobId) throw makeMergerTerminalError("merger: createSlideshow without jobId");
+  return {
+    jobId,
+    status: typeof body.status === "string" ? body.status : "queued",
+    expiresAt: typeof body.expiresAt === "string" ? body.expiresAt : undefined,
+  };
+}
+
+/** تنفيذ التعليق المصوّر (blocking حتى 5 دقائق) — POST /api/slideshow/{id}/process */
+export async function processMergerSlideshow(jobId: string): Promise<MergerJobState> {
+  const { httpStatus, body } = await mergerFetch(
+    `${BASE}/api/slideshow/${encodeURIComponent(jobId)}/process`,
+    { method: "POST", headers: { "Content-Type": "application/json" } },
+    300_000
+  );
+  if (httpStatus === 202) return { status: "processing", progress: 50 };
+  if (httpStatus >= 400 || !body) {
+    throw makeMergerTerminalError(extract(body, `merger slideshow process HTTP ${httpStatus}`));
+  }
+  return analyzeJobState(body);
+}
+
+/** استعلام حالة مهمة تعليق مصوّر — GET /api/slideshow/{id} (404 ⇒ حُذفت) */
+export async function getMergerSlideshow(jobId: string): Promise<MergerJobState> {
+  const { httpStatus, body } = await mergerFetch(
+    `${BASE}/api/slideshow/${encodeURIComponent(jobId)}`,
+    { method: "GET" }
+  );
+  if (httpStatus === 404) {
+    throw makeMergerTerminalError(
+      "مهمة التعليق المصوّر غير موجودة في الخدمة (حُذفت أو انتهت صلاحيتها بعد 24 ساعة)"
+    );
+  }
+  if (httpStatus >= 400 || !body) {
+    throw makeMergerTerminalError(extract(body, `merger slideshow status HTTP ${httpStatus}`));
+  }
+  return analyzeJobState({ ...body, jobId });
+}
+
 /** حذف مهمة دمج (تنظيف اختياري) */
 export async function deleteMergerJob(jobId: string): Promise<void> {
   try {

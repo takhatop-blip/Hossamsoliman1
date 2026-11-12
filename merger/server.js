@@ -66,6 +66,16 @@ const server = http.createServer(async (req, res) => {
       if (pathname === "/api/cron") {
         return require("./api/cron")(req, res);
       }
+      if (pathname === "/api/slideshow" && req.method === "POST") {
+        return require("./api/slideshow")(req, res);
+      }
+      const sm = pathname.match(/^\/api\/slideshow\/([^/]+)(\/(process))?$/);
+      if (sm) {
+        req.query.id = sm[1];
+        const ssub = sm[3];
+        if (!ssub) return require("./api/slideshow/[id]")(req, res);
+        if (ssub === "process") return require("./api/slideshow/[id]/process")(req, res);
+      }
       const m = pathname.match(/^\/api\/jobs\/([^/]+)(\/(process|video))?$/);
       if (m) {
         req.query.id = m[1];

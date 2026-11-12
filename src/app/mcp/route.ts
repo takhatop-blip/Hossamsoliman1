@@ -11,7 +11,7 @@ import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { z } from "zod";
-import { formatTaskForClient, refreshTask, runGeneration, runMerge } from "@/lib/orchestrator";
+import { formatTaskForClient, refreshTask, runGeneration, runMerge, runSlideshow } from "@/lib/orchestrator";
 import { resolveModel, MODELS } from "@/lib/models";
 import { listRecentTasks, type TaskRow } from "@/lib/turso";
 
@@ -21,11 +21,12 @@ export const dynamic = "force-dynamic";
 export const SERVER_INFO = { name: "media-generator-mcp", version: "1.2.0" } as const;
 
 export const SERVER_INSTRUCTIONS =
-  `AI media generation server (kie.ai + CometAPI with automatic sequential multi-key failover, plus video merging).
+  `AI media generation server (kie.ai + CometAPI with automatic sequential multi-key failover, plus video merging and narrated slideshows).
 Workflow: call generate_image or generate_video. If the response contains finished URLs, show them to the user.
 If it returns a task_id with status PROCESSING, call get_task with that task_id every ~10 seconds until status is completed (show the URL) or failed (explain why).
 IMPORTANT: the server automatically switches API keys in strict order on any failure (exhausted balance, invalid key, rate limits) and continues the SAME task under the same task_id — you will never encounter key/balance errors. Never stop or warn the user about keys or balances; just keep polling get_task until the result appears.
 To concatenate several finished clips into one video, call merge_videos with 'urls' (direct links) or 'task_ids' (completed video tasks, in merge order); track it with get_task the same way. Note: the merged file is stored on the merging service for ~24 hours only — tell the user to watch/download it promptly.
+To build a narrated video from IMAGES with a narrator voiceover (TTS), call generate_narrated_video: pass 'images' as a mix of direct image URLs and/or free-text descriptions (descriptions are generated as images first — note the free tier allows roughly one image per 45 seconds, so prefer ready URLs when speed matters), plus 'narration_text' with the narration script (Arabic by default). Track it with get_task like any other task. The output is stored ~24 hours only.
 Use list_media to recall previously generated media from the database.`;
 
 /* ---------------- إدارة الجلسات بالذاكرة ---------------- */
@@ -194,6 +195,72 @@ function buildServer(): McpServer {
       const outcome = await runMerge({
         urls: args.urls,
         task_ids: args.task_ids,
+        wait_seconds: args.wait_seconds,
+        onProgress: makeProgressCb(extra),
+      });
+      if (outcome.error || !outcome.task) {
+        return err(outcome.error || "فُقد سجل المهمة من قاعدة البيانات — أعد المحاولة.");
+      }
+      const task = outcome.task;
+      return {
+        content: [{ type: "text", text: formatTaskForClient(task) }],
+        isError: task.status === "failed",
+      };
+    }
+  );
+
+  /* ---------- 3.5) generate_narrated_video ---------- */
+  server.registerTool(
+    "generate_narrated_video",
+    {
+      title: "Generate Narrated Video",
+      description:
+        "Build a narrated video from IMAGES with a narrator voiceover (TTS). Each 'images' entry can be a direct " +
+        "image URL OR a free-text description (generated automatically — free tier: ~1 image per 45s, so ready URLs " +
+        "are faster). Provide the narration script via 'narration_text' (any language, default Arabic) or a ready " +
+        "'audio_url'. Images are shown in order; their timing follows the narration length. Returns a task — track " +
+        "with get_task. NOTE: output stored ~24 hours only.",
+      inputSchema: {
+        images: z
+          .array(z.string())
+          .min(1, "❌ مرّر صورة واحدة على الأقل — رابط مباشر أو وصف نصي.")
+          .max(20, "❌ أقصى عدد صور هو 20.")
+          .describe("Ordered list: direct image URLs (http/https) and/or text descriptions to generate as images."),
+        narration_text: z
+          .string()
+          .max(8000)
+          .optional()
+          .describe("Narration script for the TTS voice — any language (default Arabic). Mutually exclusive with audio_url."),
+        audio_url: z
+          .string()
+          .optional()
+          .describe("Alternative: direct URL of a ready audio file (mp3/wav/m4a) to use as the voiceover instead of TTS."),
+        voice_lang: z
+          .string()
+          .optional()
+          .default("ar")
+          .describe("TTS language code for narration_text (default 'ar' — Arabic)."),
+        per_image_seconds: z
+          .number()
+          .int()
+          .min(1)
+          .max(30)
+          .optional()
+          .describe("Seconds per image when there is no audio timing (default 5)."),
+        resolution: z.enum(["480p", "720p", "1080p"]).optional().default("720p"),
+        aspect_ratio: z.enum(["16:9", "9:16", "1:1"]).optional().default("16:9"),
+        wait_seconds: z.number().int().min(0).max(240).optional().default(120),
+      },
+    },
+    async (args, extra) => {
+      const outcome = await runSlideshow({
+        images: args.images,
+        narration_text: args.narration_text,
+        audio_url: args.audio_url,
+        voice_lang: args.voice_lang,
+        per_image_seconds: args.per_image_seconds,
+        resolution: args.resolution,
+        aspect_ratio: args.aspect_ratio,
         wait_seconds: args.wait_seconds,
         onProgress: makeProgressCb(extra),
       });
