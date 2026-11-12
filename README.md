@@ -64,7 +64,7 @@ curl -s -X POST http://localhost:3000/mcp \
 
 صيغ الموديل البديلة مقبولة (`gpt-image-2.6/...`, `grok-imagine-video-1.5-preview`) وتُوحَّد تلقائيًا، وقابلة للتجاوز بمتغيرات البيئة.
 
-> **ملاحظة موثقة:** توثيق CometAPI الرسمي يُصرّح أن موديل فيديو Grok لديهم يُرسل باسم `grok-imagine-video-1.5` عبر `POST /grok/v1/videos/generations` — التزمنا بالتوثيق حسب القاعدة الذهبية (لا اختراع أشكال APIs)، والاسم قابل للتجاوز بـ `COMETAPI_VIDEO_MODEL`.
+> **ملاحظة موثقة (تم التحقق من الكتالوج الحي `api.cometapi.com/api/models` في 2026-11-12):** معرّفا الموديلات الرسميان لدى CometAPI هما `gpt-image-2.5-flare` (نقطة `/v1/images/generations`) و`grok-imagine-video` (نقطة `/grok/v1/videos/generations` + استعلام `GET /grok/v1/videos/{request_id}`) — نرسلهما كما هي في الكتالوج حسب القاعدة الذهبية (لا اختراع أشكال APIs)، والاسمَان قابلان للتجاوز بـ `COMETAPI_IMAGE_MODEL` / `COMETAPI_VIDEO_MODEL`.
 
 ---
 
@@ -206,6 +206,14 @@ curl -s -o merged.mp4 "$MERGER/api/jobs/$JOB/video?download=1"
 - **kie.ai**: الدفع حسب الاستهلاك (الصورة ≈ 8 كريدت، الفيديو ≈ 19 كريدت في قياسنا) — أضف عدة مفاتيح ليتولى السيرفر التبديل تلقائيًا.
 - **Pollinations (مجاني بلا مفتاح)**: للصور فقط — يُجرَّب تلقائيًا في آخر الترتيب التسلسلي بعد كل المفاتيح المدفوعة، فلو نفدت الأرصدة تستمر الصور بالمجان بلا أي تدخل. لا يُخزَّن أي وسيط على السيرفر — يُعاد رابط التوليد نفسه (نفس prompt+seed يُنتج الصورة عبر كاش الخدمة). حدّه: سرعة أقل ومعدل استخدام مجاني محدود (429 ⇒ يحاول لاحقًا).
 
+### الحصول على رصيد CometAPI التجريبي المجاني
+
+1. سجّل حسابًا في [cometapi.com](https://www.cometapi.com) (بريد إلكتروني أو Google — **لا تُطلب بطاقة**).
+2. من لوحة الحساب ادّعِ الرصيد التجريبي المجاني إن وُجد في قسم الـ Bonus/Credits.
+3. أنشئ API Key من [console/token](https://www.cometapi.com/console/token) وانسخه.
+4. في لوحة هذا المشروع (إدارة المفاتيح) اختر المزود **CometAPI** وألصق المفتاح — سيتولى السيرفر استخدامه فورًا حسب الترتيب التسلسلي.
+   - ملاحظة: الموديلات المُرسلة فعليًا هي `gpt-image-2.5-flare` و`grok-imagine-video` (كما في كتالوجهم الحي).
+
 ---
 
 ## 6) ما الذي اختُبر فعليًا (نتائج حقيقية)
@@ -217,6 +225,7 @@ curl -s -o merged.mp4 "$MERGER/api/jobs/$JOB/video?download=1"
 - ✅ **رفض الدمج**: مقطع واحد وأكثر من 10 برسائل عربية، وحل `task_ids` بالترتيب.
 - ✅ **merger**: 11 اختبار وحدة + 28 اختبار HTTP (الدقة=أكبر دقة، المدة=المجموع، صوت، sha256 للتخزين، رفع أجزاء، 413، حذف شامل، 404، 400).
 - ✅ **الواجهة** (متصفح حقيقي): RTL عربية، إضافة/تعطيل/حذف مفتاح، لوحة مهام تتحدث كل 5 ثوانٍ، JSON ربط لكل تبويب.
+- ✅ **Pollinations e2e حي (2026-11-12)**: `generate_image` عبر MCP على النسخة المنشورة مع مفتاح kie مستنزف ولا مفتاح cometapi ⇒ نجحت الصورة خلال ~10 ثوانٍ عبر Pollinations المجاني تلقائيًا (JPEG 1024×1024، الرابط يعيد الصورة فعليًا HTTP 200 image/jpeg) — احتياط المزود الأخير يعمل كما صُمم.
 - ✅ `tsc --noEmit` نظيف + `next build` ينجح + ESLint نظيف.
 
 ## 7) بنية المستودع
@@ -224,7 +233,7 @@ curl -s -o merged.mp4 "$MERGER/api/jobs/$JOB/video?download=1"
 ```
 ├── src/
 │   ├── lib/                 # turso.ts · keys.ts · models.ts · merger.ts · orchestrator.ts
-│   │   └── providers/       # types.ts · kie.ts · cometapi.ts
+│   │   └── providers/       # types.ts · kie.ts · cometapi.ts · pollinations.ts
 │   └── app/
 │       ├── mcp/route.ts     # خادم MCP (SDK رسمي: McpServer + WebStandardStreamableHTTP)
 │       ├── api/health       # جهوزية + فحص خدمة الدمج
