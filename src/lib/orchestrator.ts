@@ -476,7 +476,7 @@ async function applyMergerState(taskId: string, st: MergerJobState): Promise<"do
 }
 
 export interface MergeOutcome {
-  task?: TaskRow;
+  task?: TaskRow | null; // getTask قد تعيد null عند فقدان الصف
   error?: string; // رسالة عربية جاهزة
 }
 

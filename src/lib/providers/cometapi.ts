@@ -9,9 +9,9 @@
  *    POST /grok/v1/videos/generations → {"request_id":"..."}
  *    GET  /grok/v1/videos/{request_id} → {"status":"done|failed|expired","video":{"url"}}
  *
- * ملاحظة موثقة: توثيق CometAPI الرسمي يُصرّح أن model فيديو Grok يجب أن يكون
- * "grok-imagine-video-1.5" (وليس صيغة preview الخاصة بـ kie) — نتبع التوثيق
- * حسب القاعدة الذهبية رقم 10، مع إمكانية التجاوز بمتغير البيئة COMETAPI_VIDEO_MODEL.
+ * ملاحظة موثقة: كتالوج CometAPI الحي (GET /api/models) يُعرّف موديل الفيديو الرسمي
+ * باسم "grok-imagine-video" (وأيضًا grok-imagine-video-1.5 في جدول الأسعار) — نتبع
+ * الكتالوج حسب القاعدة الذهبية رقم 10، مع إمكانية التجاوز بمتغير البيئة COMETAPI_VIDEO_MODEL.
  */
 import { classifyProviderError, makeProviderError } from "../keys";
 import {

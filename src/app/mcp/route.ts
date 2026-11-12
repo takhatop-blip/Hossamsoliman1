@@ -197,8 +197,10 @@ function buildServer(): McpServer {
         wait_seconds: args.wait_seconds,
         onProgress: makeProgressCb(extra),
       });
-      if (outcome.error) return err(outcome.error);
-      const task = outcome.task!;
+      if (outcome.error || !outcome.task) {
+        return err(outcome.error || "فُقد سجل المهمة من قاعدة البيانات — أعد المحاولة.");
+      }
+      const task = outcome.task;
       return {
         content: [{ type: "text", text: formatTaskForClient(task) }],
         isError: task.status === "failed",

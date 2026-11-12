@@ -29,8 +29,8 @@ export const MODELS: ModelDef[] = [
     providers: ["kie", "cometapi", "pollinations"],
     providerModel: {
       kie: env(process.env.KIE_IMAGE_MODEL) ?? "gpt-image-2-6/flare-text-to-image",
-      // عند CometAPI تُستبدل الشرطة بالنقطة ويُحذف المائل: gpt-image-2.6-flare-text-to-image
-      cometapi: env(process.env.COMETAPI_IMAGE_MODEL) ?? "gpt-image-2.6-flare-text-to-image",
+      // عند CometAPI: موديل flare الفعلي في كتالوجهم الحي (api.cometapi.com/api/models) هو gpt-image-2.5-flare
+      cometapi: env(process.env.COMETAPI_IMAGE_MODEL) ?? "gpt-image-2.5-flare",
       // Pollinations: مزود مجاني بلا مفتاح (خطة Free Access) — يُجرَّب أخيرًا بالترتيب التسلسلي
       pollinations: env(process.env.POLLINATIONS_IMAGE_MODEL) ?? "flux",
     },
@@ -42,7 +42,8 @@ export const MODELS: ModelDef[] = [
     providers: ["kie", "cometapi"],
     providerModel: {
       kie: env(process.env.KIE_VIDEO_MODEL) ?? "grok-imagine-video-1-5-preview",
-      cometapi: env(process.env.COMETAPI_VIDEO_MODEL) ?? "grok-imagine-video-1-5-preview",
+      // عند CometAPI: المعرّف الرسمي في كتالوجهم الحي هو grok-imagine-video (نقطة /grok/v1/videos/generations)
+      cometapi: env(process.env.COMETAPI_VIDEO_MODEL) ?? "grok-imagine-video",
     },
   },
 ];
