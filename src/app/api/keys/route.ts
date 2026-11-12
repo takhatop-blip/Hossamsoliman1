@@ -25,10 +25,11 @@ export async function POST(req: Request): Promise<Response> {
     const apiKey = (body.api_key || "").trim();
     const label = (body.label || "").trim();
 
-    if (provider !== "kie" && provider !== "cometapi") {
-      return Response.json({ error: "المزود غير صالح — القيم المقبولة: kie أو cometapi" }, { status: 400 });
+    if (provider !== "kie" && provider !== "cometapi" && provider !== "pollinations") {
+      return Response.json({ error: "المزود غير صالح — القيم المقبولة: kie أو cometapi أو pollinations" }, { status: 400 });
     }
-    if (!apiKey) {
+    // pollinations يعمل بلا مفتاح، لكن يُقبل توكن اختياري لمستويات أعلى إن أُتيح مستقبلًا
+    if (!apiKey && provider !== "pollinations") {
       return Response.json({ error: "المفتاح مطلوب" }, { status: 400 });
     }
     if (await keyExists(provider, apiKey)) {

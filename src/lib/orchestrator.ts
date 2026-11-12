@@ -21,9 +21,10 @@ import {
   type ProviderError,
 } from "./keys";
 import { mergerBase, createMergerJob, getMergerJob, processMergerJob, type MergerJobState } from "./merger";
-import { modelByCanonical, type ModelDef, type MediaType, type TaskProvider } from "./models";
+import { modelByCanonical, type ModelDef, type MediaType, type ProviderId, type TaskProvider } from "./models";
 import { cometapiAdapter } from "./providers/cometapi";
 import { kieAdapter } from "./providers/kie";
+import { pollinationsAdapter } from "./providers/pollinations";
 import type { ProviderAdapter, ProviderKeyRef } from "./providers/types";
 import {
   getApiKey,
@@ -37,7 +38,33 @@ import {
 const ADAPTERS: Record<string, ProviderAdapter> = {
   kie: kieAdapter,
   cometapi: cometapiAdapter,
+  pollinations: pollinationsAdapter,
 };
+
+/** مزود بلا مفتاح — يُحقن كمرشّح مصطنع في آخر الترتيب التسلسلي إن لم يوجد مفتاح حقيقي له */
+const KEYLESS_PROVIDERS = new Set<string>(["pollinations"]);
+
+function syntheticKeyCandidate(provider: string, position: number) {
+  return {
+    provider,
+    key: {
+      id: `synthetic:${provider}`,
+      provider,
+      label: `${provider} مجاني`,
+      api_key: "",
+      status: "active",
+      usage_count: 0,
+      success_count: 0,
+      fail_count: 0,
+      last_used_at: null,
+      last_checked_at: null,
+      last_error: null,
+      created_at: "",
+    },
+    position,
+    synthetic: true,
+  };
+}
 
 /** نمط رسائل مشكلات المفتاح/الرصيد — يُستخدم لقرار التبديل في منتصف المهمة (4.3.2) */
 const KEY_FAIL_PATTERN =
@@ -94,11 +121,18 @@ async function attemptCreation(
   triedKeyIds: Set<string>
 ): Promise<CreateOutcome> {
   const pool = await getKeyPool(model.providers);
+  // مزود بلا مفتاح (pollinations): يُضاف مصطنعًا في **آخر** الترتيب التسلسلي
+  // ما لم يوجد مفتاح حقيقي له في القاعدة (لو تغيّرت سياستهم مستقبلًا وتطلب توكن)
+  for (const p of model.providers) {
+    if (!KEYLESS_PROVIDERS.has(p)) continue;
+    if (pool.some((c) => c.provider === p)) continue;
+    pool.push(syntheticKeyCandidate(p, pool.length));
+  }
   for (const cand of pool) {
     if (triedKeyIds.has(cand.key.id)) continue;
     const adapter = ADAPTERS[cand.provider];
     if (!adapter) continue;
-    const providerModel = model.providerModel[cand.provider as "kie" | "cometapi"];
+    const providerModel = model.providerModel[cand.provider as ProviderId] ?? "";
     const keyRef: ProviderKeyRef = {
       id: cand.key.id,
       api_key: cand.key.api_key,
@@ -116,11 +150,11 @@ async function attemptCreation(
 
     try {
       if (model.type === "image" && adapter.createImageSync) {
-        // صور متزامنة (CometAPI): النتيجة فورية
+        // صور متزامنة (CometAPI / Pollinations): النتيجة فورية
         const { urls } = await adapter.createImageSync(keyRef, providerModel, input as never);
         attempt.ok = true;
         await updateTask(taskId, { attempts: [attempt] });
-        await recordKeySuccess(cand.key);
+        if (!cand.synthetic) await recordKeySuccess(cand.key);
         return { ok: true, provider: cand.provider as TaskProvider, keyId: cand.key.id, syncUrls: urls };
       }
       const { providerTaskId } = await adapter.createTask(keyRef, providerModel, input as never);
@@ -133,7 +167,7 @@ async function attemptCreation(
         status: "processing",
         progress: 5,
       });
-      await recordKeySuccess(cand.key);
+      if (!cand.synthetic) await recordKeySuccess(cand.key);
       return { ok: true, provider: cand.provider as TaskProvider, keyId: cand.key.id };
     } catch (e) {
       const pe = e as ProviderError;
@@ -144,7 +178,7 @@ async function attemptCreation(
       attempt.errorClass = errClass;
       attempt.error = msg.slice(0, 300);
       await updateTask(taskId, { attempts: [attempt] });
-      await recordKeyFailure(cand.key, errClass, msg);
+      if (!cand.synthetic) await recordKeyFailure(cand.key, errClass, msg);
 
       if (errClass === "params") {
         // خطأ معطيات — تبديل المفاتيح لن يحلّه: توقف فورًا بفشل حقيقي
@@ -175,7 +209,7 @@ async function pollOnce(
   if (!keyRow) return { done: false, failed: false };
   const adapter = ADAPTERS[task.provider ?? ""];
   if (!adapter) return { done: false, failed: false };
-  const providerModel = model.providerModel[task.provider as "kie" | "cometapi"];
+  const providerModel = model.providerModel[task.provider as ProviderId] ?? "";
 
   try {
     const r = await adapter.checkTask(

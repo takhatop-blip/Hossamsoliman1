@@ -109,6 +109,8 @@ export interface KeyCandidate {
   provider: string;
   key: ApiKeyRow;
   position: number;
+  /** مرشّح مصطنع لمزود بلا مفتاح (مثل pollinations) — لا تُحدَّث عدّاداته في القاعدة */
+  synthetic?: boolean;
 }
 
 /**

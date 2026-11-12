@@ -6,7 +6,7 @@
  * - providerModel: اسم الموديل كما يُرسل لكل مزود (قابل للتجاوز بمتغيرات بيئة).
  */
 
-export type ProviderId = "kie" | "cometapi";
+export type ProviderId = "kie" | "cometapi" | "pollinations";
 export type TaskProvider = ProviderId | "merger";
 export type MediaType = "image" | "video" | "merge";
 
@@ -15,7 +15,8 @@ export interface ModelDef {
   aliases: string[];
   type: MediaType;
   providers: ProviderId[];
-  providerModel: Record<ProviderId, string>;
+  /** اسم الموديل لكل مزود يدعمه — Partial لأن المزودين بلا مفتاح (مثل pollinations) يخدمون الصور فقط */
+  providerModel: Partial<Record<ProviderId, string>>;
 }
 
 const env = (v?: string | null) => (v && v.trim() ? v.trim() : null);
@@ -25,11 +26,13 @@ export const MODELS: ModelDef[] = [
     canonical: "gpt-image-2-6/flare-text-to-image",
     aliases: ["gpt-image-2.6/flare-text-to-image"],
     type: "image",
-    providers: ["kie", "cometapi"],
+    providers: ["kie", "cometapi", "pollinations"],
     providerModel: {
       kie: env(process.env.KIE_IMAGE_MODEL) ?? "gpt-image-2-6/flare-text-to-image",
       // عند CometAPI تُستبدل الشرطة بالنقطة ويُحذف المائل: gpt-image-2.6-flare-text-to-image
       cometapi: env(process.env.COMETAPI_IMAGE_MODEL) ?? "gpt-image-2.6-flare-text-to-image",
+      // Pollinations: مزود مجاني بلا مفتاح (خطة Free Access) — يُجرَّب أخيرًا بالترتيب التسلسلي
+      pollinations: env(process.env.POLLINATIONS_IMAGE_MODEL) ?? "flux",
     },
   },
   {

@@ -308,6 +308,7 @@ export default function Dashboard() {
               >
                 <option value="kie">kie.ai</option>
                 <option value="cometapi">CometAPI</option>
+                <option value="pollinations">Pollinations (مجاني)</option>
               </select>
               <input
                 value={apiKeyInput}
@@ -345,7 +346,7 @@ export default function Dashboard() {
                   <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-semibold">
-                        {k.provider === "kie" ? "kie.ai" : "CometAPI"}
+                        {k.provider === "kie" ? "kie.ai" : k.provider === "pollinations" ? "Pollinations (مجاني)" : "CometAPI"}
                       </span>
                       <KeyBadge status={k.status} />
                       {k.label && <span className="text-xs text-slate-400">({k.label})</span>}
