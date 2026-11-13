@@ -68,3 +68,8 @@ db/
 # مخلفات جلسات العمل والاختبار
 tool-results/
 scripts/ss_test_output.mp4
+
+# مجلد رفع المستخدم (قد يحتوي أسراراً مُلصقة) + مخلفات الجلسات
+upload/
+scripts/.device_code
+scripts/*.log
