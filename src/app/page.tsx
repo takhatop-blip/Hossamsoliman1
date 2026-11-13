@@ -230,6 +230,8 @@ export default function Dashboard() {
   const tools = [
     { name: "generate_image", desc: "توليد صورة بـ gpt-image-2-6/flare-text-to-image مع توبديل تلقائي عبر كل المفاتيح" },
     { name: "generate_video", desc: "توليد فيديو بصوت متزامن أصلي (grok-imagine-video-1-5-preview) وصورة أولى اختيارية" },
+    { name: "generate_cartoon_video", desc: "فيديو كرتوني من النص مباشرة بدون صور — استايل ديزني/بيكسار/أنمي/كرتون" },
+    { name: "generate_narrated_video", desc: "فيديو بتعليق صوتي راوٍ من صور أو أوصاف نصية (TTS عربي افتراضيًا)" },
     { name: "merge_videos", desc: "دمج عدة مقاطع في فيديو واحد بالترتيب — عبر urls أو task_ids لمهام مكتملة" },
     { name: "get_task", desc: "تتبع أي مهمة بمعرّفها حتى اكتمالها وعرض روابط النتائج" },
     { name: "list_media", desc: "أحدث الصور/الفيديوهات/الدمجات المخزنة بروابطها من قاعدة البيانات" },

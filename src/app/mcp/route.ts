@@ -13,6 +13,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { z } from "zod";
 import { formatTaskForClient, refreshTask, runGeneration, runMerge, runSlideshow } from "@/lib/orchestrator";
 import { resolveModel, MODELS } from "@/lib/models";
+import { resolveStyle, STYLE_PRESETS } from "@/lib/styles";
 import { listRecentTasks, type TaskRow } from "@/lib/turso";
 
 export const runtime = "nodejs";
@@ -27,6 +28,7 @@ If it returns a task_id with status PROCESSING, call get_task with that task_id 
 IMPORTANT: the server automatically switches API keys in strict order on any failure (exhausted balance, invalid key, rate limits) and continues the SAME task under the same task_id — you will never encounter key/balance errors. Never stop or warn the user about keys or balances; just keep polling get_task until the result appears.
 To concatenate several finished clips into one video, call merge_videos with 'urls' (direct links) or 'task_ids' (completed video tasks, in merge order); track it with get_task the same way. Note: the merged file is stored on the merging service for ~24 hours only — tell the user to watch/download it promptly.
 To build a narrated video from IMAGES with a narrator voiceover (TTS), call generate_narrated_video: pass 'images' as a mix of direct image URLs and/or free-text descriptions (descriptions are generated as images first — note the free tier allows roughly one image per 45 seconds, so prefer ready URLs when speed matters), plus 'narration_text' with the narration script (Arabic by default). Track it with get_task like any other task. The output is stored ~24 hours only.
+To generate an animated CARTOON video straight from TEXT (no image input at all), call generate_cartoon_video with 'prompt' (any language) and optionally 'style' (disney by default; pixar, anime, cartoon also available) — the server prepends the style preset to the prompt automatically; otherwise it behaves like generate_video (native audio, track with get_task).
 Use list_media to recall previously generated media from the database.`;
 
 /* ---------------- إدارة الجلسات بالذاكرة ---------------- */
@@ -271,6 +273,62 @@ function buildServer(): McpServer {
       return {
         content: [{ type: "text", text: formatTaskForClient(task) }],
         isError: task.status === "failed",
+      };
+    }
+  );
+
+  /* ---------- 3.75) generate_cartoon_video ---------- */
+  server.registerTool(
+    "generate_cartoon_video",
+    {
+      title: "Generate Cartoon Video",
+      description:
+        "Generate an animated CARTOON video directly from TEXT — no image input needed. Uses grok-imagine-video-1-5-preview " +
+        "with a built-in animation style preset prepended to the prompt automatically (disney by default; pixar, anime, " +
+        "cartoon also available). Native synchronized audio: dialogue in the prompt is spoken. Video takes minutes: short " +
+        "wait with live progress, then a task_id — track it with get_task every ~10 seconds until completed, show the URL.",
+      inputSchema: {
+        prompt: z.string().min(1).max(4096).describe("Scene description in any language (Arabic works). Dialogue in the prompt is spoken in the video."),
+        style: z
+          .enum(["disney", "pixar", "anime", "cartoon"])
+          .optional()
+          .default("disney")
+          .describe("Animation style preset: disney (classic Disney cartoon), pixar (3D CGI), anime (Japanese anime), cartoon (2D flat)."),
+        duration: z.number().int().min(1).max(15).optional().default(8).describe("Duration in seconds."),
+        aspect_ratio: z.enum(["auto", "1:1", "16:9", "9:16", "3:2", "2:3"]).optional().default("16:9"),
+        resolution: z.enum(["480p", "720p", "1080p"]).optional().default("480p"),
+        enable_audio: z.boolean().optional().default(true),
+        wait_seconds: z.number().int().min(0).max(240).optional().default(120),
+      },
+    },
+    async (args, extra) => {
+      // توحيد الأسلوب — الافتراضي ديزني، والمجهول يُرفض برسالة عربية واضحة
+      const preset = resolveStyle(args.style);
+      if (!preset) {
+        return err(`❌ أسلوب غير معروف: ${args.style}. المتاح: ${Object.keys(STYLE_PRESETS).join(", ")}`);
+      }
+      const model = resolveModel("grok-imagine-video-1-5-preview");
+      if (!model) {
+        return err("❌ موديل الفيديو غير مهيأ على السيرفر.");
+      }
+      // الفيديو الكرتوني من النص فقط: لا image_url إطلاقًا — الأسلوب يُدمج في بداية الوصف
+      const effectivePrompt = `${preset.prompt}\nScene: ${args.prompt}`;
+      const task = await runGeneration({
+        model,
+        params: {
+          prompt: effectivePrompt,
+          aspect_ratio: args.aspect_ratio,
+          resolution: args.resolution,
+          enable_audio: args.enable_audio,
+          duration: args.duration,
+        },
+        wait_seconds: args.wait_seconds,
+        onProgress: makeProgressCb(extra),
+      });
+      const failed = task.status === "failed";
+      return {
+        content: [{ type: "text", text: formatTaskForClient(task) }],
+        isError: failed,
       };
     }
   );
